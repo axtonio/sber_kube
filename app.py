@@ -1,6 +1,8 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import logging
+
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
@@ -19,18 +21,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- PROMETHEUS METRICS ---
+REQUEST_COUNT = Counter(
+    'flask_app_requests_total', 'Total App HTTP Requests', ['method', 'endpoint', 'http_status']
+)
+REQUEST_LATENCY = Histogram(
+    'flask_app_request_latency_seconds', 'Flask Request latency', ['endpoint']
+)
+
+from time import time
+
+@app.before_request
+def before_request():
+    request.start_time = time()
+
+@app.after_request
+def after_request(response):
+    latency = time() - getattr(request, 'start_time', time())
+    REQUEST_COUNT.labels(request.method, request.path, response.status_code).inc()
+    REQUEST_LATENCY.labels(request.path).observe(latency)
+    return response
 
 @app.route('/', methods=['GET'])
 def welcome():
     logger.info("Welcome endpoint called")
     return WELCOME_MESSAGE
 
-
 @app.route('/status', methods=['GET'])
 def status():
     logger.info("Status endpoint called")
     return jsonify({"status": "ok"})
-
 
 @app.route('/log', methods=['POST'])
 def log():
@@ -43,7 +63,6 @@ def log():
 
     return jsonify({"status": "logged"})
 
-
 @app.route('/logs', methods=['GET'])
 def get_logs():
     logger.info("Logs endpoint called")
@@ -55,6 +74,10 @@ def get_logs():
         logger.error(f"Error reading logs: {e}")
         return jsonify({"error": str(e)}), 500
 
+# --- METRICS ENDPOINT ---
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=PORT)
